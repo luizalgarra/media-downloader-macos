@@ -1,6 +1,6 @@
 import Foundation
 
-public final class DownloadHistoryStore: @unchecked Sendable {
+public final class DownloadHistoryStore {
     private let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder

@@ -1,6 +1,6 @@
 import Foundation
 
-public final class UserPreferencesStore: @unchecked Sendable {
+public final class UserPreferencesStore {
     private enum Keys {
         static let defaultDestinationPath = "media_downloader.default_destination_path"
     }
