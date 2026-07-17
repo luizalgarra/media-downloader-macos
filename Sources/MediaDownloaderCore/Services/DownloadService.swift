@@ -228,7 +228,7 @@ private final class LineAccumulator: @unchecked Sendable {
     }
 }
 
-private final class LockedValue<Value>: @unchecked Sendable {
+private final class LockedValue<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Value
 

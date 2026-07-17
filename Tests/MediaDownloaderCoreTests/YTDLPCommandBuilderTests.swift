@@ -40,8 +40,9 @@ final class YTDLPCommandBuilderTests: XCTestCase {
 
         XCTAssertTrue(command.arguments.contains("--write-subs"))
         XCTAssertTrue(command.arguments.contains("--write-auto-subs"))
-        XCTAssertTrue(command.arguments.contains("pt.*,pt-BR,en.*"))
         XCTAssertTrue(command.arguments.contains("--skip-download"))
+        let subLangsIndex = try XCTUnwrap(command.arguments.firstIndex(of: "--sub-langs"))
+        XCTAssertEqual(command.arguments[subLangsIndex + 1], "pt.*,pt-BR,en.*")
     }
 
     func testRejectsInvalidURL() {
