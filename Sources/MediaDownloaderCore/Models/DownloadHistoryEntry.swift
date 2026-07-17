@@ -17,7 +17,7 @@ public struct DownloadHistoryEntry: Codable, Equatable, Identifiable, Sendable {
 
     public init(
         id: UUID = UUID(),
-        date: Date = .now,
+        date: Date = Date(),
         sourceURL: String,
         mode: DownloadMode,
         destinationPath: String,

@@ -37,7 +37,14 @@ public struct YTDLPCommandBuilder: Sendable {
     }
 
     public func buildCommand(for request: DownloadRequest) throws -> YTDLPCommand {
-        guard let normalizedURL = URL(string: request.sourceURL), let scheme = normalizedURL.scheme, ["http", "https"].contains(scheme) else {
+        let cleanedSourceURL = request.sourceURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard
+            let normalizedURL = URL(string: cleanedSourceURL),
+            let scheme = normalizedURL.scheme?.lowercased(),
+            ["http", "https"].contains(scheme)
+        else {
             throw YTDLPCommandBuilderError.invalidSourceURL(request.sourceURL)
         }
 
@@ -51,29 +58,32 @@ public struct YTDLPCommandBuilder: Sendable {
         switch request.mode {
         case .video:
             arguments += [
-                "-f", "bv*+ba/b",
+                "--format", "bv*+ba/b",
                 "--merge-output-format", "mp4",
-                "-o", "%(title)s.%(ext)s"
+                "--output", "%(title)s.%(ext)s"
             ]
+
         case .mp3:
             guard let ffmpegURL = toolLocator.findFFmpeg() else {
                 throw YTDLPCommandBuilderError.missingFFmpeg
             }
 
             arguments += [
-                "-x",
+                "--extract-audio",
                 "--audio-format", "mp3",
                 "--audio-quality", "0",
                 "--ffmpeg-location", ffmpegURL.path,
-                "-o", "%(title)s.%(ext)s"
+                "--output", "%(title)s.%(ext)s"
             ]
+
         case .playlist:
             arguments += [
                 "--yes-playlist",
-                "-f", "bv*+ba/b",
+                "--format", "bv*+ba/b",
                 "--merge-output-format", "mp4",
-                "-o", "%(playlist_title)s/%(title)s.%(ext)s"
+                "--output", "%(playlist_title)s/%(title)s.%(ext)s"
             ]
+
         case .subtitles:
             arguments += [
                 "--skip-download",
@@ -81,21 +91,30 @@ public struct YTDLPCommandBuilder: Sendable {
                 "--write-auto-subs",
                 "--sub-langs", "pt.*,pt-BR,en.*",
                 "--convert-subs", "srt",
-                "-o", "%(title)s.%(ext)s"
+                "--output", "%(title)s.%(ext)s"
             ]
         }
 
-        arguments.append(request.sourceURL)
-        return YTDLPCommand(executableURL: ytDlpURL, arguments: arguments)
+        arguments.append(cleanedSourceURL)
+
+        return YTDLPCommand(
+            executableURL: ytDlpURL,
+            arguments: arguments
+        )
     }
 
     private func commonArguments(destinationPath: String) -> [String] {
         [
+            "--ignore-config",
             "--newline",
             "--progress",
             "--no-warnings",
-            "--print", "after_move:\(Self.revealPrefix)%(filepath)s",
-            "-P", destinationPath
+            "--print",
+            "after_move:\(Self.revealPrefix)%(filepath)s",
+            "--paths",
+            destinationPath
         ]
     }
 }
+
+

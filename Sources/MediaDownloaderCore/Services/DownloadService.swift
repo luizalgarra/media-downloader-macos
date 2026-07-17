@@ -1,4 +1,5 @@
 import Foundation
+
 #if os(macOS)
 import AppKit
 #endif
@@ -20,13 +21,16 @@ public enum DownloadServiceError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .alreadyRunning:
-            "Já existe um download em andamento."
+            return "Já existe um download em andamento."
+
         case .launchFailed(let message):
-            "Falha ao iniciar o download: \(message)"
+            return "Falha ao iniciar o download: \(message)"
+
         case .processFailed(let status):
-            "O yt-dlp finalizou com código \(status)."
+            return "O yt-dlp finalizou com código \(status)."
+
         case .cancelled:
-            "Download cancelado pelo usuário."
+            return "Download cancelado pelo usuário."
         }
     }
 }
@@ -35,7 +39,10 @@ public final class DownloadService: @unchecked Sendable {
     private let commandBuilder: YTDLPCommandBuilder
     private let outputParser: YTDLPOutputParser
     private let processFactory: @Sendable () -> Process
-    private let stateQueue = DispatchQueue(label: "media-downloader.download-service.state")
+
+    private let stateQueue = DispatchQueue(
+        label: "media-downloader.download-service.state"
+    )
 
     private var activeProcess: Process?
     private var isCancelled = false
@@ -54,14 +61,19 @@ public final class DownloadService: @unchecked Sendable {
         request: DownloadRequest,
         onLog: @escaping @Sendable (String) -> Void,
         onProgress: @escaping @Sendable (Double) -> Void,
-        onCompletion: @escaping @Sendable (Result<DownloadCompletion, Error>) -> Void
+        onCompletion: @escaping @Sendable (
+            Result<DownloadCompletion, Error>
+        ) -> Void
     ) throws {
         let command = try commandBuilder.buildCommand(for: request)
+
         let process = processFactory()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+
         let stdoutAccumulator = LineAccumulator()
         let stderrAccumulator = LineAccumulator()
+
         let revealedOutputPath = LockedValue<String?>(nil)
 
         try stateQueue.sync {
@@ -73,7 +85,17 @@ public final class DownloadService: @unchecked Sendable {
             isCancelled = false
         }
 
-        let lineHandler: @Sendable (String) -> Void = { [outputParser] line in
+        let printableCommand = Self.printableCommand(
+            executableURL: command.executableURL,
+            arguments: command.arguments
+        )
+
+        onLog("Comando executado:")
+        onLog(printableCommand)
+
+        let lineHandler: @Sendable (String) -> Void = {
+            [outputParser] line in
+
             guard let parsedLine = outputParser.parse(line) else {
                 return
             }
@@ -97,6 +119,7 @@ public final class DownloadService: @unchecked Sendable {
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
+
             if data.isEmpty {
                 stdoutAccumulator.flush(using: lineHandler)
                 return
@@ -107,6 +130,7 @@ public final class DownloadService: @unchecked Sendable {
 
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
+
             if data.isEmpty {
                 stderrAccumulator.flush(using: lineHandler)
                 return
@@ -118,57 +142,193 @@ public final class DownloadService: @unchecked Sendable {
         process.terminationHandler = { [weak self] terminatedProcess in
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+
             stdoutAccumulator.flush(using: lineHandler)
             stderrAccumulator.flush(using: lineHandler)
 
             let wasCancelled = self?.stateQueue.sync { () -> Bool in
                 let cancelled = self?.isCancelled ?? false
+
                 self?.activeProcess = nil
                 self?.isCancelled = false
+
                 return cancelled
             } ?? false
 
             let outputPath = revealedOutputPath.get()
+            let terminationStatus = terminatedProcess.terminationStatus
+
+            onLog("Código de saída do yt-dlp: \(terminationStatus)")
 
             if wasCancelled {
-                onCompletion(.failure(DownloadServiceError.cancelled))
+                onCompletion(
+                    .failure(DownloadServiceError.cancelled)
+                )
                 return
             }
 
-            if terminatedProcess.terminationStatus == 0 {
+            let outputFileExists = Self.outputExists(
+                atPath: outputPath
+            )
+
+            if terminationStatus == 0 {
                 onProgress(1)
-                self?.revealInFinder(outputPath: outputPath, fallbackDirectory: request.destinationDirectory)
-                onCompletion(.success(DownloadCompletion(outputPath: outputPath)))
-            } else {
-                onCompletion(.failure(DownloadServiceError.processFailed(terminatedProcess.terminationStatus)))
+
+                self?.revealInFinder(
+                    outputPath: outputPath,
+                    fallbackDirectory: request.destinationDirectory
+                )
+
+                onCompletion(
+                    .success(
+                        DownloadCompletion(outputPath: outputPath)
+                    )
+                )
+
+                return
             }
+
+            /*
+             O yt-dlp pode retornar código diferente de zero quando uma
+             operação secundária falha, mesmo depois de criar o arquivo.
+
+             Neste caso, se o caminho final foi informado e o arquivo existe,
+             o download é considerado concluído.
+             */
+            if outputFileExists {
+                onLog(
+                    "O yt-dlp retornou código \(terminationStatus), " +
+                    "mas o arquivo final foi criado com sucesso."
+                )
+
+                if let outputPath {
+                    onLog("Arquivo confirmado: \(outputPath)")
+                }
+
+                onProgress(1)
+
+                self?.revealInFinder(
+                    outputPath: outputPath,
+                    fallbackDirectory: request.destinationDirectory
+                )
+
+                onCompletion(
+                    .success(
+                        DownloadCompletion(outputPath: outputPath)
+                    )
+                )
+
+                return
+            }
+
+            onCompletion(
+                .failure(
+                    DownloadServiceError.processFailed(
+                        terminationStatus
+                    )
+                )
+            )
         }
 
         do {
             try process.run()
-            onLog("Iniciando \(request.mode.title) para \(request.sourceURL)")
+
+            onLog(
+                "Iniciando \(request.mode.title) para \(request.sourceURL)"
+            )
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+
             stateQueue.sync {
                 activeProcess = nil
                 isCancelled = false
             }
-            throw DownloadServiceError.launchFailed(error.localizedDescription)
+
+            throw DownloadServiceError.launchFailed(
+                error.localizedDescription
+            )
         }
     }
 
     public func cancel() {
         stateQueue.sync {
+            guard let activeProcess else {
+                return
+            }
+
             isCancelled = true
-            activeProcess?.terminate()
+            activeProcess.terminate()
         }
     }
 
-    private func revealInFinder(outputPath: String?, fallbackDirectory: URL) {
+    private static func outputExists(atPath path: String?) -> Bool {
+        guard let path, !path.isEmpty else {
+            return false
+        }
+
+        var isDirectory: ObjCBool = false
+
+        let exists = FileManager.default.fileExists(
+            atPath: path,
+            isDirectory: &isDirectory
+        )
+
+        return exists && !isDirectory.boolValue
+    }
+
+    private static func printableCommand(
+        executableURL: URL,
+        arguments: [String]
+    ) -> String {
+        ([executableURL.path] + arguments)
+            .map(Self.shellQuoted)
+            .joined(separator: " ")
+    }
+
+    private static func shellQuoted(_ argument: String) -> String {
+        guard !argument.isEmpty else {
+            return "''"
+        }
+
+        let safeCharacters = CharacterSet(
+            charactersIn:
+                "abcdefghijklmnopqrstuvwxyz" +
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+                "0123456789" +
+                "-._/:=@+,%"
+        )
+
+        if argument.unicodeScalars.allSatisfy({
+            safeCharacters.contains($0)
+        }) {
+            return argument
+        }
+
+        let escaped = argument.replacingOccurrences(
+            of: "'",
+            with: "'\\''"
+        )
+
+        return "'\(escaped)'"
+    }
+
+    private func revealInFinder(
+        outputPath: String?,
+        fallbackDirectory: URL
+    ) {
         #if os(macOS)
-        let targetURL = outputPath.map(URL.init(fileURLWithPath:)) ?? fallbackDirectory
-        NSWorkspace.shared.activateFileViewerSelecting([targetURL])
+        let targetURL: URL
+
+        if let outputPath, !outputPath.isEmpty {
+            targetURL = URL(fileURLWithPath: outputPath)
+        } else {
+            targetURL = fallbackDirectory
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting(
+            [targetURL]
+        )
         #endif
     }
 }
@@ -177,7 +337,10 @@ private final class LineAccumulator: @unchecked Sendable {
     private var buffer = Data()
     private let lock = NSLock()
 
-    func append(_ data: Data, using handler: @escaping @Sendable (String) -> Void) {
+    func append(
+        _ data: Data,
+        using handler: @escaping @Sendable (String) -> Void
+    ) {
         lock.lock()
         buffer.append(data)
         let chunks = drainCompleteLines()
@@ -188,17 +351,32 @@ private final class LineAccumulator: @unchecked Sendable {
         }
     }
 
-    func flush(using handler: @escaping @Sendable (String) -> Void) {
+    func flush(
+        using handler: @escaping @Sendable (String) -> Void
+    ) {
         lock.lock()
+
         let data = buffer
         buffer.removeAll(keepingCapacity: false)
+
         lock.unlock()
 
-        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+        guard
+            !data.isEmpty,
+            let text = String(data: data, encoding: .utf8)
+        else {
             return
         }
 
-        handler(text)
+        let trimmedText = text.trimmingCharacters(
+            in: .newlines
+        )
+
+        guard !trimmedText.isEmpty else {
+            return
+        }
+
+        handler(trimmedText)
     }
 
     private func drainCompleteLines() -> [String] {
@@ -210,13 +388,21 @@ private final class LineAccumulator: @unchecked Sendable {
         var startIndex = 0
         var lines: [String] = []
 
-        for (index, byte) in bytes.enumerated() where byte == 10 || byte == 13 {
+        for (index, byte) in bytes.enumerated()
+        where byte == 10 || byte == 13 {
             if index > startIndex {
-                let lineData = Data(bytes[startIndex..<index])
-                if let line = String(data: lineData, encoding: .utf8) {
+                let lineData = Data(
+                    bytes[startIndex..<index]
+                )
+
+                if let line = String(
+                    data: lineData,
+                    encoding: .utf8
+                ), !line.isEmpty {
                     lines.append(line)
                 }
             }
+
             startIndex = index + 1
         }
 
@@ -228,7 +414,9 @@ private final class LineAccumulator: @unchecked Sendable {
     }
 }
 
-private final class LockedValue<Value: Sendable>: @unchecked Sendable {
+private final class LockedValue<Value: Sendable>:
+    @unchecked Sendable {
+
     private let lock = NSLock()
     private var value: Value
 
@@ -239,6 +427,7 @@ private final class LockedValue<Value: Sendable>: @unchecked Sendable {
     func get() -> Value {
         lock.lock()
         defer { lock.unlock() }
+
         return value
     }
 
